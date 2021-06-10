@@ -1,11 +1,11 @@
 CFLAGS=-g -Wall -O3
 
-APPLICATIONS=example example2	
+APPLICATIONS=example example2 argParse	
 
 all:    $(APPLICATIONS)
 
 %:      %.c
-		gcc  $(CFLAGS) $@.c -o $@
+		gcc  $(CFLAGS) -pthread $@.c -o $@
 
 clean:
 		rm -f *~ $(APPLICATIONS)
