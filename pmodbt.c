@@ -39,6 +39,7 @@ static struct argp_option options[] = {
     { "uart", 'u', 0, 0, "Simple comunication with the connected bluetooth device or with the PMOD."},
     { "connect", 'c', "[Bluetooth Address]", 0, "Connect to given bluetooth address. The address must be provided in the following format [11:22:33:44:55:66]\n"},
     { "disconnect", 'd', 0, 0, "Disconnect the device."},
+    { "exitCMDmode", 'e', 0, 0, "Exit CMD mode."},
     { 0 } 
 };
 
@@ -47,6 +48,7 @@ struct arguments {
         CONNECT,
         DISCONNECT,
         COMMUNICATE,
+        EXITCMDMODE,
         UNSET
     } mode;
     char* ble_address;
@@ -119,6 +121,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     struct arguments *arguments = state->input;
     switch (key) {
     case 'u': arguments->mode = COMMUNICATE; break;
+    case 'e': arguments->mode = EXITCMDMODE; break;
     case 'd': arguments->mode = DISCONNECT; break;
     case 'c': arguments->ble_address = arg; arguments->mode = CONNECT; break;
     case ARGP_KEY_ARG: return 0;
@@ -284,6 +287,9 @@ int enter_device_cmd_mode(int device_descriptor) {
         return 0;
     }
     free(recv_buffer);
+
+    printf("Device coudl be stuck in the CMD mode, try -e option first!\n");
+
     return 1;
 }
 
@@ -451,16 +457,13 @@ int get_connected_address(int device_descriptor, char* recv_buffer) {
 }
 
 /**
- * @see Page 33
- * C,<address>
- * This command causes the device to connect to a remote address, 
- * where <address> is specified in hex format. The address is also stored as the remote address.
- * Example:
- * "C,00A053112233"
- * Connect to the Bluetooth address // 00A053112233
+ * Function: thread_pooling_module
+ * ----------------------------
+ *  Thread function in pooling mode, read from the device descriptor every 0.1 seconds
+ *  Thread function is cancellable and ASYNC cancellable
+ *      @param[in] args device descriptor
+ * 
  */
-
-
 
 void* thread_pooling_module(void* args) {
 
@@ -478,11 +481,18 @@ void* thread_pooling_module(void* args) {
         int recv_bytes = read(device_descriptor, pmod_buffer, 256);  // Read up to 256 characters if ready to read 
         if(recv_bytes > 0) {
             pmod_buffer[recv_bytes] = 0;
-            printf("\nPmodBT2 > %s\n", pmod_buffer);
+            printf("\nPmodBT2 Responded > %s", pmod_buffer);
         }
     }
 
 }
+
+/**
+ * Function: handler
+ * ----------------------------
+ *  Dummy handler function for SIGALRM to stop the scanf function
+ * 
+ */
 
 void handler(int signo) {
   return;
@@ -581,17 +591,27 @@ int main(int argc, char* argv[]) {
         #endif
     }
 
+    /** Exit CMD mode */
+
+    if(arguments.mode == EXITCMDMODE) { 
+        #ifdef RELEASE
+            printf("Exiting comand mode...\n");
+            if(!exit_device_cmd_mode(device_descriptor)) {
+                printf("Device has exited CMD mode succesfully!\n");
+            }
+        #endif
+    }
+
+
     /** Communicate with the other device, something like a pipe */
+
+#pragma region COMMUNICATE
 
     if(arguments.mode == COMMUNICATE) {
 
         /** Verify if the device is connected ? */
 
         /** Start communication */
-        
-
-        // How do i do this
-
 
         #ifdef RELEASE
             printf("Entering comand mode...\n");
@@ -632,6 +652,8 @@ int main(int argc, char* argv[]) {
                         printf("DEBUG: Device has exited CMD mode succesfully!\n");
                     #endif
 
+                    printf("> ");
+
                     /** Start communication */
 
                     char* user_buffer = calloc(256, sizeof(char));
@@ -642,7 +664,7 @@ int main(int argc, char* argv[]) {
                     pthread_t thread_id;
                     pthread_create(&thread_id, NULL, thread_pooling_module, (void*)&device_descriptor);
 
-                    struct sigaction sa;
+                    struct sigaction sa;        
 
                     sa.sa_handler = handler;
                     sigemptyset(&sa.sa_mask);
@@ -655,7 +677,15 @@ int main(int argc, char* argv[]) {
 
                         if(scanf("%s", user_buffer) == 1) {
                             user_buffer_size = strlen(user_buffer);
-                            if(user_buffer_size > 1) {
+                            if(user_buffer_size > 0) {
+
+                                /** Maybe put <cr><lf> at the end ot buffer  */
+
+                                if(strncmp(user_buffer, "$$$", 3)) {
+                                    user_buffer[user_buffer_size++] = 0xD;
+                                    user_buffer[user_buffer_size] = 0;
+                                }
+
                                 sent_bytes = send_message_to_device(device_descriptor, user_buffer, user_buffer_size);
 
                                 if(sent_bytes == user_buffer_size) {
@@ -665,6 +695,7 @@ int main(int argc, char* argv[]) {
                                 }
                             }
                         }
+                        printf("> ");
                     }            
 
                     pthread_cancel(thread_id);
@@ -679,9 +710,9 @@ int main(int argc, char* argv[]) {
                     free(user_buffer);
 
                 } else {
-                        printf("Something wen wrong!\n");
-                        do_cleanup(device_descriptor);
-                        return -1;
+                    printf("Something wen wrong!\n");
+                    do_cleanup(device_descriptor);
+                    return -1;
                 }
 
 
@@ -695,17 +726,13 @@ int main(int argc, char* argv[]) {
 
     }
 
-
-
-
+#pragma endregion COMMUNICATE
 
     /** Before exiting we must reset the device to exit from command mode */
     #ifdef RELEASE
         do_cleanup(device_descriptor);
         close(device_descriptor);
     #endif
-
-
 
     return 0;
 }

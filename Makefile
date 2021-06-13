@@ -1,6 +1,6 @@
 CFLAGS=-g -Wall -O3
 
-APPLICATIONS=example example2 argParse	
+APPLICATIONS=pmodbt
 
 all:    $(APPLICATIONS)
 
