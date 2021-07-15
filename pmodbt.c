@@ -8,12 +8,12 @@
 #include <argp.h>
 #include <signal.h>
 #include <pthread.h>
-#include <oledDisplay.h>
+#include "oledDisplay.h"
 
 /**
  * Defines for developing
  */
-#define DEBUG 
+//#define DEBUG 
 #define RELEASE 
 
 /** Variable for detecting CTRL-C */
